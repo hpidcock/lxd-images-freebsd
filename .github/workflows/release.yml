@@ -1,0 +1,167 @@
+name: Release
+
+# Builds LXD virtual-machine images of FreeBSD from the official FreeBSD VM
+# disk images, attaches them to a GitHub release, and republishes
+# streams/v1/index.json + streams/v1/images.json as assets on a separate
+# "streams/v1" release, so that:
+#
+#   lxc remote add freebsd https://github.com/<owner>/<repo>/releases/download --protocol simplestreams
+#   lxc launch freebsd:15.1 fbsd --vm -c boot.mode=uefi-nosecureboot
+#
+# works. Triggered by pushing a version tag (e.g. v1.0.0) or manually with
+# a version to publish to (the tag and release are created if missing).
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish to, e.g. v1.0.0 (created at this commit if missing)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# Only one release at a time may rewrite the streams/v1 metadata.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Determine version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version=$INPUT_VERSION
+          else
+            version=${GITHUB_REF#refs/tags/}
+          fi
+          case "$version" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "invalid version '$version', expected vX.Y.Z" >&2; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create release for ${{ steps.version.outputs.version }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
+          fi
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # FreeBSD releases with VM images under
+        # https://download.freebsd.org/releases/VM-IMAGES/ to publish.
+        release: ["14.4", "14.5", "15.0", "15.1"]
+        # LXD can run FreeBSD VMs with UEFI firmware on x86_64 and aarch64.
+        arch: [amd64, arm64]
+        # default: plain image; cloud: BASIC-CLOUDINIT image (sshd + nuageinit).
+        variant: [default, cloud]
+    name: build ${{ matrix.release }} ${{ matrix.arch }} ${{ matrix.variant }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install qemu-img
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils xz-utils
+
+      - name: Build image
+        run: |
+          set -eu
+          image/build.sh \
+            -r "${{ matrix.release }}" \
+            -a "${{ matrix.arch }}" \
+            -v "${{ matrix.variant }}" \
+            -o dist -c cache
+          rm -rf cache
+          ls -l dist
+
+      - name: Upload image assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: gh release upload "$VERSION" dist/*.lxd.tar.xz dist/*.disk.qcow2 --clobber
+
+      - name: Save manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-${{ matrix.release }}-${{ matrix.arch }}-${{ matrix.variant }}
+          path: dist/*.json
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: manifest-*
+          path: manifests
+          merge-multiple: true
+
+      - name: Fetch existing streams metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          mkdir -p tmp
+          gh release download streams/v1 -D tmp -p 'images.json' || true
+
+      - name: Update streams/v1 metadata
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -eu
+          manifest_args=()
+          for m in manifests/*.json; do
+            manifest_args+=(--manifest "$m")
+          done
+          python3 .github/scripts/update_streams.py \
+            --version "$VERSION" \
+            --existing-images tmp/images.json \
+            --output-images streams/v1/images.json \
+            --output-index streams/v1/index.json \
+            "${manifest_args[@]}"
+          cat streams/v1/index.json
+
+      - name: Publish streams/v1 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if ! gh release view "streams/v1" >/dev/null 2>&1; then
+            gh release create "streams/v1" \
+              --target "$GITHUB_SHA" \
+              --title "streams/v1" \
+              --notes "Simplestreams metadata for the FreeBSD LXD image remote. Add with: lxc remote add freebsd https://github.com/${{ github.repository }}/releases/download --protocol simplestreams"
+          fi
+          gh release upload "streams/v1" streams/v1/index.json streams/v1/images.json --clobber
