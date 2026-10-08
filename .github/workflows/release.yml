@@ -72,7 +72,7 @@ jobs:
       matrix:
         # FreeBSD releases with VM images under
         # https://download.freebsd.org/releases/VM-IMAGES/ to publish.
-        release: ["14.4", "14.5", "15.0", "15.1"]
+        release: ["15.1"]
         # LXD can run FreeBSD VMs with UEFI firmware on x86_64 and aarch64.
         arch: [amd64, arm64]
         # default: plain image; cloud: BASIC-CLOUDINIT image (sshd + nuageinit).
