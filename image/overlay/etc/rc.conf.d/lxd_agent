@@ -1,0 +1,2 @@
+# Installed by lxd-images-freebsd: start the LXD agent when running as a LXD VM.
+lxd_agent_enable="YES"

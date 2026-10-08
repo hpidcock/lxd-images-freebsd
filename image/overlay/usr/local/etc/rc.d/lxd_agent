@@ -1,0 +1,86 @@
+#!/bin/sh
+#
+# Start the LXD virtual machine agent when running as a LXD VM.
+#
+# LXD exposes a "config" share (9p) with the agent's certificates and
+# configuration; its contents are copied to a tmpfs under $lxd_agent_rundir and
+# the agent is started from there, mirroring what LXD's systemd units do in
+# Linux guests. The agent talks to LXD over AF_VSOCK, which needs the vsock and
+# virtio_socket modules from /boot/modules (see kmod/ in lxd-images-freebsd).
+
+# PROVIDE: lxd_agent
+# REQUIRE: mountcritlocal var cleanvar
+# BEFORE: hostname NETWORKING
+# KEYWORD: nojail shutdown
+
+. /etc/rc.subr
+
+name="lxd_agent"
+desc="LXD virtual machine agent"
+rcvar="lxd_agent_enable"
+
+: ${lxd_agent_enable:="NO"}
+: ${lxd_agent_rundir:="/var/run/lxd_agent"}
+: ${lxd_agent_logfile:="/var/log/lxd-agent.log"}
+: ${lxd_agent_flags:=""}
+
+command="/usr/local/bin/lxd-agent"
+pidfile="/var/run/lxd-agent.pid"
+start_cmd="lxd_agent_start"
+stop_postcmd="lxd_agent_poststop"
+extra_commands=""
+
+lxd_agent_is_lxd_vm()
+{
+	[ "$(kenv -q smbios.planar.product)" = "LXD" ]
+}
+
+lxd_agent_start()
+{
+	local _try
+
+	if ! lxd_agent_is_lxd_vm; then
+		echo "${name}: not running inside a LXD virtual machine, not starting."
+		return 0
+	fi
+
+	# By file name: load_kld's module-name check does not match these files.
+	for _kld in vsock virtio_socket virtio_p9fs virtio_console; do
+		kldstat -q -n "${_kld}.ko" || kldload "$_kld" || echo "${name}: failed loading ${_kld}" >&2
+	done
+
+	# Fresh runtime directory on a private tmpfs.
+	umount -f "${lxd_agent_rundir}/.mnt" 2>/dev/null || :
+	umount -f "${lxd_agent_rundir}" 2>/dev/null || :
+	mkdir -p "${lxd_agent_rundir}"
+	mount -t tmpfs -o mode=0700,size=50m tmpfs "${lxd_agent_rundir}"
+	mkdir -p "${lxd_agent_rundir}/.mnt"
+
+	# The 9p device can take a moment to be usable right after boot.
+	_try=0
+	until mount -t p9fs -o ro config "${lxd_agent_rundir}/.mnt" 2>/dev/null; do
+		_try=$((_try + 1))
+		if [ "$_try" -ge 10 ]; then
+			echo "${name}: could not mount the LXD config share, not starting." >&2
+			umount "${lxd_agent_rundir}"
+			return 1
+		fi
+		sleep 1
+	done
+
+	cp -R "${lxd_agent_rundir}/.mnt/." "${lxd_agent_rundir}/"
+	umount "${lxd_agent_rundir}/.mnt"
+	rmdir "${lxd_agent_rundir}/.mnt"
+	chmod -R go-rwx "${lxd_agent_rundir}"
+
+	echo "Starting ${name}."
+	cd "${lxd_agent_rundir}" && daemon -f -p "${pidfile}" -t "${name}" -o "${lxd_agent_logfile}" "${command}" ${lxd_agent_flags}
+}
+
+lxd_agent_poststop()
+{
+	umount -f "${lxd_agent_rundir}" 2>/dev/null || :
+}
+
+load_rc_config $name
+run_rc_command "$1"

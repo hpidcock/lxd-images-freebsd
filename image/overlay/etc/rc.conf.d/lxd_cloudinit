@@ -1,0 +1,2 @@
+# Installed by lxd-images-freebsd: apply LXD provided cloud-init config with nuageinit.
+lxd_cloudinit_enable="YES"

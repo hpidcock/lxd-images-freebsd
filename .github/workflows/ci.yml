@@ -1,0 +1,62 @@
+name: CI
+
+# Builds and tests the FreeBSD lxd-agent (agent/) and checks the shell scripts.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Build for FreeBSD
+        working-directory: agent
+        run: |
+          set -eu
+          for arch in amd64 arm64; do
+            GOOS=freebsd GOARCH=$arch CGO_ENABLED=0 go build -tags agent,netgo -trimpath -ldflags "-s -w" -o "lxd-agent-$arch" .
+          done
+          ls -l lxd-agent-*
+
+      - name: Vet
+        working-directory: agent
+        run: |
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet -tags agent,netgo ./...
+          go vet -tags agent,netgo ./...
+
+      - name: Test
+        working-directory: agent
+        run: go test -tags agent,netgo ./...
+
+      - name: Upload agent binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: lxd-agent
+          path: agent/lxd-agent-*
+          retention-days: 7
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Syntax check shell scripts
+        run: |
+          set -eu
+          for f in image/build.sh image/customize.sh kmod/build.sh image/overlay/usr/local/etc/rc.d/*; do
+            sh -n "$f"
+          done

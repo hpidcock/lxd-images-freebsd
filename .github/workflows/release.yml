@@ -65,7 +65,8 @@ jobs:
 
   build:
     needs: prepare
-    runs-on: ubuntu-latest
+    # arm64 images are built on arm64 runners so the FreeBSD builder VM runs natively.
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -81,10 +82,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install qemu-img
+      - name: Install QEMU and image tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-utils xz-utils
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-system-arm qemu-efi-aarch64 qemu-utils \
+            genisoimage xz-utils
+          # Let the runner use KVM for the builder VM when the host provides it.
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
 
       - name: Build image
         run: |

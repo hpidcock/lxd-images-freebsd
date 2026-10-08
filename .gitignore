@@ -1,2 +1,5 @@
 image/cache/
 image/dist/
+.direnv/
+agent/lxd-agent
+agent/lxd-agent-*

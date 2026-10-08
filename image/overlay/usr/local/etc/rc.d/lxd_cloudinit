@@ -1,0 +1,37 @@
+#!/bin/sh
+#
+# Apply the cloud-init configuration LXD provides (user-data, vendor-data,
+# network-config and meta-data) with nuageinit(7) before the network comes up.
+# "lxd-agent cloud-init" fetches it from the devlxd socket, writes a NoCloud
+# seed and runs nuageinit's pre-network stage; lxd_cloudinit_postnet and
+# lxd_cloudinit_script run the later stages.
+
+# PROVIDE: lxd_cloudinit
+# REQUIRE: lxd_agent
+# BEFORE: hostname NETWORKING
+# KEYWORD: nojail
+
+. /etc/rc.subr
+
+name="lxd_cloudinit"
+desc="Apply LXD provided cloud-init configuration with nuageinit"
+rcvar="lxd_cloudinit_enable"
+
+: ${lxd_cloudinit_enable:="NO"}
+: ${lxd_cloudinit_flags:=""}
+
+start_cmd="lxd_cloudinit_start"
+stop_cmd=":"
+
+lxd_cloudinit_start()
+{
+	if [ "$(kenv -q smbios.planar.product)" != "LXD" ] || [ ! -f /var/run/lxd-agent.pid ]; then
+		return 0
+	fi
+
+	rm -rf /var/run/lxd-cloudinit
+	/usr/local/bin/lxd-agent cloud-init ${lxd_cloudinit_flags} 2>&1 | tee -a /var/log/lxd-cloudinit.log
+}
+
+load_rc_config $name
+run_rc_command "$1"

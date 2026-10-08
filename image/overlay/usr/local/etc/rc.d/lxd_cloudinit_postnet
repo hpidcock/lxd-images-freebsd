@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# Post-network stage of the LXD provided cloud-init configuration: packages,
+# users, passwords and deferred write_files. Mirrors /etc/rc.d/nuageinit_post_net,
+# which only runs when nuageinit_enable is set (the cidata/config-2 drive case).
+
+# PROVIDE: lxd_cloudinit_postnet
+# REQUIRE: NETWORKING devfs lxd_cloudinit
+# BEFORE: SERVERS
+# KEYWORD: nojail
+
+. /etc/rc.subr
+
+name="lxd_cloudinit_postnet"
+desc="Post network stage of LXD provided cloud-init configuration"
+rcvar="lxd_cloudinit_enable"
+
+start_cmd="lxd_cloudinit_postnet_start"
+stop_cmd=":"
+
+lxd_cloudinit_postnet_start()
+{
+	[ -f /var/run/lxd-cloudinit/applied ] || return 0
+	load_rc_config nuageinit
+	if checkyesno nuageinit_enable; then
+		# nuageinit's own rc scripts will do it.
+		return 0
+	fi
+	test -f /var/cache/nuageinit/user_data -o -f /var/cache/nuageinit/user-data || return 0
+	/usr/libexec/nuageinit /var/cache/nuageinit/ postnet 2>&1 | tee -a /var/log/lxd-cloudinit.log
+}
+
+load_rc_config lxd_cloudinit
+run_rc_command "$1"

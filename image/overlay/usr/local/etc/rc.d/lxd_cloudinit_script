@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# Final stage of the LXD provided cloud-init configuration: runcmd and
+# user-data scripts. Mirrors /etc/rc.d/nuageinit_user_data_script.
+
+# PROVIDE: lxd_cloudinit_script
+# REQUIRE: local lxd_cloudinit_postnet
+# KEYWORD: nojail
+
+. /etc/rc.subr
+
+name="lxd_cloudinit_script"
+desc="Run LXD provided cloud-init runcmd and user-data scripts"
+rcvar="lxd_cloudinit_enable"
+
+start_cmd="lxd_cloudinit_script_start"
+stop_cmd=":"
+
+lxd_cloudinit_script_start()
+{
+	[ -f /var/run/lxd-cloudinit/applied ] || return 0
+	load_rc_config nuageinit
+	if checkyesno nuageinit_enable; then
+		return 0
+	fi
+	if [ -x /var/cache/nuageinit/runcmds ]; then
+		echo "Executing 'runcmd'" | tee -a /var/log/lxd-cloudinit.log
+		/var/cache/nuageinit/runcmds 2>&1 | tee -a /var/log/lxd-cloudinit.log
+	fi
+	test -x /var/cache/nuageinit/user_data || return 0
+	echo "Executing user_data script" | tee -a /var/log/lxd-cloudinit.log
+	/var/cache/nuageinit/user_data 2>&1 | tee -a /var/log/lxd-cloudinit.log
+}
+
+load_rc_config lxd_cloudinit
+run_rc_command "$1"
